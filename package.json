@@ -1,0 +1,12 @@
+{
+  "name": "claude-code-latex",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rm -f hooks/mathjax/*.js && sh build/esbuild.sh && cp node_modules/mathjax-full/LICENSE hooks/mathjax/LICENSE"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "mathjax-full": "^3.2.2"
+  }
+}

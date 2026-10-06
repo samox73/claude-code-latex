@@ -1,0 +1,8 @@
+{
+  "extends": "./.claude-plugin/types/tsconfig.json",
+  "compilerOptions": {
+    // raster.ts is index-heavy numeric code; per-access undefined checks only add noise
+    "noUncheckedIndexedAccess": false,
+    "allowImportingTsExtensions": true
+  }
+}

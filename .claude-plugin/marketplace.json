@@ -1,0 +1,12 @@
+{
+  "name": "claude-code-latex",
+  "description": "LaTeX display math for Claude Code's terminal",
+  "owner": { "name": "Samuel Recker" },
+  "plugins": [
+    {
+      "name": "tex-display",
+      "source": "./",
+      "description": "Renders display math ($$…$$, \\[…\\], equation/align/gather/multline) in Claude Code's terminal as images, with MathJax bundled: nothing to install"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "name": "tex-display",
+  "version": "0.1.0",
+  "description": "Renders display math ($$…$$, \\[…\\], equation/align/gather/multline) in Claude Code's terminal as images, with MathJax bundled: nothing to install",
+  "author": {
+    "name": "Samuel Recker"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/samox73/claude-code-latex",
+  "repository": "https://github.com/samox73/claude-code-latex",
+  "types": "./types/index.d.ts",
+  "keywords": [
+    "latex",
+    "math",
+    "mathjax",
+    "terminal",
+    "kitty",
+    "mod"
+  ],
+  "userConfig": {
+    "cellAspect": {
+      "type": "number",
+      "title": "Terminal cell aspect",
+      "description": "Terminal cell height ÷ width in pixels; set it with /tex-calibrate. When it's off, math is drawn slightly smaller than its cells, never distorted",
+      "default": 2.15
+    },
+    "scale": {
+      "type": "number",
+      "title": "Math size",
+      "description": "Height of one TeX em in terminal rows (1 = one text line; the terminal font itself is about 0.8)",
+      "default": 1
+    }
+  }
+}

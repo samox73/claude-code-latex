@@ -1,0 +1,1 @@
+Vendored unchanged from https://github.com/dazebug/latex-inline at 6681ad099cd26753de0f888774460f79a21525e3 (MIT, see LICENSE): texToUnicode is the Unicode fallback for terminals without kitty graphics.
