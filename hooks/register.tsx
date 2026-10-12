@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, RenderInput } from 'claude-code'
 
 import { tex2svg } from './mathjax/mathjax-entry.js'
 import { encodePng } from './png'
@@ -56,6 +56,9 @@ export function split(text: string): Piece[] {
 
 const MATH_PROMPT = `# Math rendering
 This terminal renders display math. When an equation should be shown (not handed over as LaTeX source to copy), write it as display math on its own lines, outside any code fence: $$ … $$ (or \\[ … \\], or a bare \\begin{equation|align|gather|multline} environment). Backslashes inside these blocks reach the renderer unchanged, so any TeX spacing or escape works there. Never write inline math: no $ … $, \\( … \\), or LaTeX commands inside prose, since they show as raw source. Any formula, even a short one, goes in its own display block. In running text, name a single symbol or index in plain Unicode (τ, Σ, ω_q, N_q) and put anything with structure (fractions, sums, sub/superscript combinations, operators) in a display block after the sentence.`
+
+// What the built-in /btw tells the model, in short: a fork denies every tool.
+const BTW_NOTE = 'A side question, answered apart from the main conversation: reply directly in one message from what you already know. No tools run here, so never promise to check or look something up.'
 
 type Picture = { png: string; bytes: number; columns: number; rows: number }
 
@@ -117,6 +120,41 @@ function probe(a: number, rgb: [number, number, number]) {
   const width = PROBE_COLUMNS * CELL_W, height = Math.round(PROBE_ROWS * CELL_W * a)
   const png = encodePng(new Uint8Array(width * height).fill(255), width, height, rgb) as Uint8Array & { toBase64(): string }
   return png.toBase64()
+}
+
+// The display math of a transcript row's text as images (Unicode text where
+// the terminal can't show them) between its markdown, in a column that
+// replaces the row's text; null when the text has none, so the engine's own
+// row stands. (Top level: the sandbox passes `$` to such functions only.)
+function column($: EngineInterface, e: RenderInput<'AssistantMessage' | 'CommandOutput', 'terminal'>, text: string, { images, rgb }: Look, cellH: number, scale: number) {
+  if (!/\$\$|\\\[|\\begin\{/.test(text)) return null
+  const pieces = split(text)
+  if (!pieces.some(p => 'tex' in p)) return null
+  const { Box, Text, Markdown, Image } = $.ui.resolve(e)
+  const maxColumns = Math.max(10, (e.viewport?.columns ?? 80) - 6)
+  let budget = MAX_BYTES
+  return (
+    <Box flexDirection="column" flexGrow={1}>
+      {pieces.map((p, i) => {
+        if ('md' in p) return <Markdown key={`m${i}`} text={p.md} />
+        if (!images) return <Box key={`b${i}`} paddingLeft={2} marginY={1}><Text>{texToUnicode(p.tex)}</Text></Box>
+        const pic = picture(p.tex, maxColumns, rgb, cellH, scale)
+        if (pic) budget -= pic.bytes
+        if (!pic || budget < 0) return <Box key={`b${i}`} marginY={1}><Markdown key={`m${i}`} text={'```latex\n' + p.tex + '\n```'} /></Box>
+        return (
+          <Box key={`b${i}`} paddingLeft={2} marginY={1}>
+            <Image
+              key={`t${i}`}
+              source={{ png: pic.png }}
+              columns={pic.columns}
+              rows={pic.rows}
+              alt={p.tex.replace(/\s+/g, ' ')}
+            />
+          </Box>
+        )
+      })}
+    </Box>
+  )
 }
 
 export const register: Register = (on, options) => {
@@ -194,39 +232,39 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    if (e.surface !== 'terminal' || !/\$\$|\\\[|\\begin\{/.test(e.props.text)) return next(e)
-    const pieces = split(e.props.text)
-    if (!pieces.some(p => 'tex' in p)) return next(e)
-
-    const { Box, Text, Markdown, Image } = $.ui.resolve(e)
-    const { images, rgb } = await (look ??= detect($))
-    const maxColumns = Math.max(10, (e.viewport?.columns ?? 80) - 6)
-    let budget = MAX_BYTES
+    const tree = e.surface === 'terminal' && column($, e, e.props.text, await (look ??= detect($)), cellH, scale)
+    if (!tree) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
     // the engine's own reply rows carry a blank line above and a "● " gutter
     // (the bullet on a reply's first block); a tree drawn here replaces the row
     return (
       <Box flexDirection="row" marginTop={1}>
         <Text>{e.props.isFirstOfReply ? '● ' : '  '}</Text>
-        <Box flexDirection="column" flexGrow={1}>
-        {pieces.map((p, i) => {
-          if ('md' in p) return <Markdown key={`m${i}`} text={p.md} />
-          if (!images) return <Box key={`b${i}`} paddingLeft={2} marginY={1}><Text>{texToUnicode(p.tex)}</Text></Box>
-          const pic = picture(p.tex, maxColumns, rgb, cellH, scale)
-          if (pic) budget -= pic.bytes
-          if (!pic || budget < 0) return <Box key={`b${i}`} marginY={1}><Markdown key={`m${i}`} text={'```latex\n' + p.tex + '\n```'} /></Box>
-          return (
-            <Box key={`b${i}`} paddingLeft={2} marginY={1}>
-              <Image
-                key={`t${i}`}
-                source={{ png: pic.png }}
-                columns={pic.columns}
-                rows={pic.rows}
-                alt={p.tex.replace(/\s+/g, ' ')}
-              />
-            </Box>
-          )
-        })}
-        </Box>
+        {tree}
+      </Box>
+    )
+  })
+
+  // /btw draws its answer in a panel of its own, which no render hook reaches.
+  // So the side question is asked here instead, with the same tool-less fork
+  // over the transcript, and its answer printed as the command's output: a
+  // transcript row, drawn below like a reply. Bare /btw (the engine's history
+  // browser) and a session with nothing to fork yet are left to the engine.
+  on('command.run', { command: 'btw' }, async ($, e, next) => {
+    if (!e.args.trim()) return next(e)
+    const r = await $.model.fork({ prompt: `${BTW_NOTE}\n\n${e.args}` })
+    if (!r.isAnswered && r.reason === 'nothing-to-fork') return next(e)
+    return { text: r.isAnswered ? r.text : `_(no answer: ${r.reason})_` }
+  })
+
+  on('ui.render', { component: 'CommandOutput', props: { command: 'btw' } }, async ($, e, next) => {
+    const tree = e.surface === 'terminal' && !e.props.isErrored && column($, e, e.props.text, await (look ??= detect($)), cellH, scale)
+    if (!tree) return next(e)
+    const { Box, Text } = $.ui.resolve(e)
+    return (
+      <Box flexDirection="row">
+        <Text dimColor>{'  ⎿  '}</Text>
+        {tree}
       </Box>
     )
   })

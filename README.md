@@ -7,6 +7,7 @@ A [Claude Code](https://claude.com/claude-code) mod that renders LaTeX display m
 - **Nothing to install.** MathJax 3 is bundled, and the SVG it produces is turned into pixels by a small pure-TypeScript rasterizer and PNG encoder. There's no TeX install, no WebAssembly and no network access.
 - **No more eaten backslashes.** The math is cut out of the reply's raw text before Claude Code's Markdown renderer sees it, so `\,`, `\{`, `\\` and friends reach TeX intact.
 - **Covers what you use:** `$$…$$`, `\[…\]`, bare `equation`, `align`, `gather` and `multline` environments (starred too), AMS packages, `mhchem`, matrices, stretchy braces and arrows, `\boxed`, `\cancel` and `\enclose`.
+- **Works in `/btw`.** A side question's answer is drawn by Claude Code's own panel, which no mod can reach, so the mod answers `/btw question` itself: the same tool-less fork of the conversation, printed as the command's output in the transcript with its math drawn. Bare `/btw` still opens the built-in panel. The panel's history browsing, copy and fork keys are not on the row.
 - **Tells Claude about it.** Once per context window, Claude gets a short note that display math is drawn here and that inline math isn't, so it writes formulas as display blocks instead of in code fences.
 
 <details>
@@ -68,6 +69,8 @@ Everything the mod hooks, and why (`claude plugin validate .claude-plugin/plugin
 | --- | --- |
 | `ui.render` (`AssistantMessage`) | Draw replies containing display math as Markdown plus images |
 | `prompt.submit` | Attach the math note to the first prompt of each context window |
+| `command.run` (`btw`), `$.model.fork` | Answer `/btw question` with a fork of the transcript, printed as the command's output |
+| `ui.render` (`CommandOutput`) | Draw that output row's display math as images |
 | `session.compact`, `session.end` | Notice a compaction or `/clear`, so the note is sent again |
 | `config.set` (`theme`), `$.config.list` | Pick the ink colour from the theme |
 | `session.start`, `command.run`, `ui.render` (`Pane`), `$.command.register`, `$.ui.open`, `$.ui.close`, `$.ui.toast` | The `/tex-calibrate` command and its pane |

@@ -105,3 +105,16 @@ test('/tex-calibrate: the probe box, and "Blue above/below" raises the trial asp
   expect(await ui.find({ type: 'Text', text: /cellAspect 2\.16 \(current 2\.15\)/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('/btw is answered by a fork of the transcript; its output row draws the math', async ($, on) => {
+  terminal(on, { TERM: 'xterm-kitty' })
+  const text = 'Energy:\n$$E = \\hbar \\omega$$'
+  const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+  on('model.fork', ($, e) => ({ value: { isAnswered: true as const, text: e.prompt.endsWith('\n\nwhat is E?') ? text : `lost the question: ${e.prompt}`, usage } }))
+  const run = { origin: { kind: 'composer' as const }, presentation: { isFullscreen: true, columns: 80 } }
+  expect((await $.command.run({ ...run, command: 'btw', args: 'what is E?' })).text).toBe(text)
+  const props = { command: 'btw', args: 'what is E?', text, isErrored: false }
+  const ui = await $.ui.mount({ plugin: 'tex-display', surface: 'terminal', component: 'CommandOutput', props })
+  expect((await ui.find({ type: 'Image' }))?.props.alt).toBe('E = \\hbar \\omega')
+  await ui.unmount()
+})
