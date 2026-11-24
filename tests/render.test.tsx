@@ -3,7 +3,7 @@ import { expect, mock, test } from 'claude-code/testing'
 
 import { tex2svg } from '../hooks/mathjax/mathjax-entry.js'
 import { rasterize, viewBox } from '../hooks/raster'
-import { split } from '../hooks/register'
+import { cite, split } from '../hooks/register'
 
 // What a terminal session gives the mod beneath it: its environment, and a
 // config list (where it reads the theme; none here, so the dark default).
@@ -117,4 +117,59 @@ test('/btw is answered by a fork of the transcript; its output row draws the mat
   const ui = await $.ui.mount({ plugin: 'tex-display', surface: 'terminal', component: 'CommandOutput', props })
   expect((await ui.find({ type: 'Image' }))?.props.alt).toBe('E = \\hbar \\omega')
   await ui.unmount()
+})
+
+test('equations are numbered X.Y, the model is told the next number, and a cited one carries its source', async ($, on) => {
+  terminal(on, { TERM: 'xterm-256color' })
+  mock.store(on)
+  on('session.id', () => ({ value: 's1' }))
+  on('session.surfaces', () => ({ value: ['terminal'] as const }))
+  const seen: string[][] = []
+  on('prompt.submit', ($, e) => { seen.push((e.context ?? []).filter(c => !c.startsWith('# Math rendering'))); return { text: e.text, context: e.context } })
+  const prompt = (text: string, kind: 'composer' | 'task-notification' = 'composer') => $.prompt.submit({ text, wait: false, origin: { kind } })
+  const row = (uuid: string, text: string, extra: { door?: 'command'; agentId?: string } = {}) =>
+    $.session.append({
+      door: extra.door ?? 'response', uuid, agentId: extra.agentId,
+      origin: extra.door ? { kind: 'composer' } : { kind: 'model', model: 'm' },
+      message: extra.door ? { type: 'system', name: 'local_command', content: [{ type: 'text', text }] } : { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] },
+    })
+  const labels = async (requestId: string, text: string) => {
+    const ui = await $.ui.mount({ plugin: 'tex-display', surface: 'terminal', component: 'AssistantMessage', requestId, props: { text, isFirstOfReply: true } })
+    const all = ['(2.1)', '(2.2)', '(2.3)', '(2.4)', '(2.b1)']
+    const found = await Promise.all(all.map(async l => ((await ui.find({ type: 'Text', text: l })) ? l : '')))
+    await ui.unmount()
+    return found.filter(Boolean)
+  }
+
+  await prompt('one')
+  await row('a1', 'no math here')
+  await prompt('two')
+  await row('a2', '$$a$$\nand\n$$b$$')
+  await row('sub', '$$never drawn$$', { agentId: 'agent-1' })
+  await row('echo', '<command-name>/btw</command-name> about $$q$$', { door: 'command' })
+  await row('side', '<local-command-stdout>tex-display: $$s$$</local-command-stdout>', { door: 'command' })
+  await row('a3', 'after a tool call:\n$$c$$')
+  await prompt('a task finished', 'task-notification')
+  await row('a4', '$$d$$')
+  await prompt('why the sign in (2.3) and (2.b1), and 1.5 eV in (9.9)?')
+
+  expect(await labels('a2', '$$a$$\nand\n$$b$$')).toEqual(['(2.1)', '(2.2)'])
+  expect(await labels('a3', 'after a tool call:\n$$c$$')).toEqual(['(2.3)']) // the /btw answer took no Y
+  expect(await labels('side', '$$s$$')).toEqual(['(2.b1)'])
+  expect(await labels('a4', '$$d$$')).toEqual(['(2.4)']) // a notification opens no new X
+  expect(await labels('unknown', '$$x$$')).toEqual([]) // a row never counted draws unnumbered
+  expect(seen.map(c => c[0])).toEqual([
+    'Display equations you write from here on are drawn numbered (1.1), (1.2), … in order.',
+    'Display equations you write from here on are drawn numbered (2.1), (2.2), … in order.',
+    'Display equations you write from here on are drawn numbered (2.4), (2.5), … in order.',
+    'Display equations you write from here on are drawn numbered (3.1), (3.2), … in order.',
+  ])
+  expect(seen[3][1]).toBe('The user cites equations by the numbers this terminal draws beside them. Their LaTeX source:\n(2.3): c\n(2.b1): s')
+})
+
+test('cite: the forms a prompt names an equation by; unknown numbers and bare decimals are left alone', () => {
+  const n = { x: 3, y: 2, at: {}, tex: { '3.1': 'a', '3.2': 'b', '1.5': 'c' } }
+  expect(cite('see (3.2), Eq. 3.1, eqs. (3.2) and equation 3.1', n)).toBe('The user cites equations by the numbers this terminal draws beside them. Their LaTeX source:\n(3.2): b\n(3.1): a')
+  expect(cite('a gap of 1.5 eV, version 3.2, and (7.7)', n)).toBe('')
+  expect(cite('(3.2)', { x: 0, y: 0, at: {} })).toBe('') // a store from before the sources were kept
 })

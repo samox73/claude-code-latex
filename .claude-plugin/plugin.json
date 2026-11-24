@@ -1,6 +1,6 @@
 {
   "name": "tex-display",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Renders display math ($$…$$, \\[…\\], equation/align/gather/multline) in Claude Code's terminal as images, with MathJax bundled: nothing to install",
   "author": {
     "name": "Samuel Recker"

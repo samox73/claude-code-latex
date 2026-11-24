@@ -14,6 +14,7 @@ import { texToUnicode } from './vendor/latex-inline/unicode'
 // the sharpness.
 const CELL_W = 20
 const MAX_BYTES = 2 * 1024 * 1024 // Image source limit, for all Images of one drawn message together
+const LABEL_W = 9 // columns kept free right of an equation for its number: "(12.34)" and a gap
 
 // Fenced code passes through untouched; outside it, $$…$$, \[…\] and bare
 // \begin{equation|align|gather|multline}…\end{…} (starred too) are display math.
@@ -55,7 +56,13 @@ export function split(text: string): Piece[] {
 }
 
 const MATH_PROMPT = `# Math rendering
-This terminal renders display math. When an equation should be shown (not handed over as LaTeX source to copy), write it as display math on its own lines, outside any code fence: $$ … $$ (or \\[ … \\], or a bare \\begin{equation|align|gather|multline} environment). Backslashes inside these blocks reach the renderer unchanged, so any TeX spacing or escape works there. Never write inline math: no $ … $, \\( … \\), or LaTeX commands inside prose, since they show as raw source. Any formula, even a short one, goes in its own display block. In running text, name a single symbol or index in plain Unicode (τ, Σ, ω_q, N_q) and put anything with structure (fractions, sums, sub/superscript combinations, operators) in a display block after the sentence.`
+This terminal renders display math. When an equation should be shown (not handed over as LaTeX source to copy), write it as display math on its own lines, outside any code fence: $$ … $$ (or \\[ … \\], or a bare \\begin{equation|align|gather|multline} environment). Backslashes inside these blocks reach the renderer unchanged, so any TeX spacing or escape works there. Never write inline math: no $ … $, \\( … \\), or LaTeX commands inside prose, since they show as raw source. Any formula, even a short one, goes in its own display block. In running text, name a single symbol or index in plain Unicode (τ, Σ, ω_q, N_q) and put anything with structure (fractions, sums, sub/superscript combinations, operators) in a display block after the sentence.
+
+Each display block is drawn with a number (X.Y) at its right: X counts the user's prompts, Y the display blocks you wrote since prompt X, in order and across tool calls (a block inside a code fence is not drawn, so not counted). A note with each prompt gives the next number. The user refers to equations by these numbers; refer to them the same way, as "(3.2)" in prose, and never write a number or \\tag inside a block yourself.`
+
+// Who a new X is opened for: the person's own prompts. Any other submission
+// (a task's notification, another session's message) continues the Ys.
+const PERSON = ['composer', 'bridge', 'sdk']
 
 // What the built-in /btw tells the model, in short: a fork denies every tool.
 const BTW_NOTE = 'A side question, answered apart from the main conversation: reply directly in one message from what you already know. No tools run here, so never promise to check or look something up.'
@@ -92,6 +99,49 @@ function picture(tex: string, maxColumns: number, rgb: [number, number, number],
   return pic
 }
 
+// Equation numbers "(X.Y)": X counts the person's prompts, Y the display blocks
+// the model wrote since prompt X. X moves in prompt.submit, where the model is
+// told the next number in the same breath, so what it was told is what is drawn;
+// Ys are assigned as rows are stored (session.append, whose uuid is the
+// requestId the row is drawn under). A /btw answer, which the model never sees,
+// is numbered apart, "(X.bN)", so it can't shift the Ys the model counts. All of
+// it is kept in $.store under the session's id, so a hot reload or a --resume
+// draws the same numbers.
+// `at`: a drawn row's X, the count before its first block, and 1 on a /btw row.
+// `tex`: each numbered block's source under its "X.Y" or "X.bN", for cite() below.
+export type Numbers = { x: number; y: number; b?: number; at: Record<string, [number, number, 1?]>; tex?: Record<string, string> }
+type Held = { key: string; n: Numbers }
+
+// The equations a prompt cites by number, as a note for the model, which has
+// to count to resolve one and has lost the block itself after a compaction:
+// "(3.2)", "eq. 3.2", "Eqs. (3.2)", "equation 3.2", "(3.b1)". Only
+// numbers that were drawn count, so "(1.5)" meaning something else is left
+// alone unless an equation 1.5 exists. '' when the prompt cites none.
+// ponytail: a bare list ("eqs. 3.2 and 3.3") resolves its first number only; parenthesised ones all resolve.
+const CITED = /\((\d+\.b?\d+)\)|\b(?:eqs?\.?|equations?)\s*\(?(\d+\.b?\d+)/gi
+
+export function cite(text: string, n: Numbers): string {
+  const ids = new Set([...text.matchAll(CITED)].map(m => m[1] ?? m[2]).filter(id => n.tex?.[id] !== undefined))
+  if (!ids.size) return ''
+  return 'The user cites equations by the numbers this terminal draws beside them. Their LaTeX source:\n' + [...ids].map(id => `(${id}): ${n.tex![id]}`).join('\n')
+}
+const KEPT_SESSIONS = 50
+
+async function numbersOf($: EngineInterface): Promise<Held> {
+  const fresh = (): Numbers => ({ x: 0, y: 0, at: {} })
+  try {
+    const key = `numbers:${await $.session.id()}`
+    const n = (await $.store.get(key)) as Numbers | undefined
+    if (n) return { key, n }
+    // ponytail: drops the oldest-created sessions, not the least recently used; an LRU if resumed old sessions lose their numbers.
+    const old = (await $.store.keys()).filter(k => k.startsWith('numbers:'))
+    for (const k of old.slice(0, Math.max(0, old.length + 1 - KEPT_SESSIONS))) await $.store.delete(k)
+    return { key, n: fresh() }
+  } catch {
+    return { key: 'numbers:unknown', n: fresh() } // no store: the math is still drawn, numbered for this run only
+  }
+}
+
 // What the terminal can show: images where it speaks the kitty graphics protocol
 // (kitty, Ghostty; tmux passes none of it through), Unicode text elsewhere; and
 // the ink colour, from Claude Code's theme or, for "auto", the terminal's COLORFGBG.
@@ -126,30 +176,36 @@ function probe(a: number, rgb: [number, number, number]) {
 // the terminal can't show them) between its markdown, in a column that
 // replaces the row's text; null when the text has none, so the engine's own
 // row stands. (Top level: the sandbox passes `$` to such functions only.)
-function column($: EngineInterface, e: RenderInput<'AssistantMessage' | 'CommandOutput', 'terminal'>, text: string, { images, rgb }: Look, cellH: number, scale: number) {
+function column($: EngineInterface, e: RenderInput<'AssistantMessage' | 'CommandOutput', 'terminal'>, text: string, { images, rgb }: Look, cellH: number, scale: number, { n }: Held) {
   if (!/\$\$|\\\[|\\begin\{/.test(text)) return null
   const pieces = split(text)
   if (!pieces.some(p => 'tex' in p)) return null
   const { Box, Text, Markdown, Image } = $.ui.resolve(e)
-  const maxColumns = Math.max(10, (e.viewport?.columns ?? 80) - 6)
+  const maxColumns = Math.max(10, (e.viewport?.columns ?? 80) - 6 - LABEL_W)
   let budget = MAX_BYTES
+  const at = n.at[e.requestId] // absent on a row stored before the mod counted: drawn unnumbered
+  let y = 0
   return (
     <Box flexDirection="column" flexGrow={1}>
       {pieces.map((p, i) => {
         if ('md' in p) return <Markdown key={`m${i}`} text={p.md} />
-        if (!images) return <Box key={`b${i}`} paddingLeft={2} marginY={1}><Text>{texToUnicode(p.tex)}</Text></Box>
-        const pic = picture(p.tex, maxColumns, rgb, cellH, scale)
-        if (pic) budget -= pic.bytes
-        if (!pic || budget < 0) return <Box key={`b${i}`} marginY={1}><Markdown key={`m${i}`} text={'```latex\n' + p.tex + '\n```'} /></Box>
+        let body
+        if (!images) body = <Box paddingLeft={2}><Text>{texToUnicode(p.tex)}</Text></Box>
+        else {
+          const pic = picture(p.tex, maxColumns, rgb, cellH, scale)
+          if (pic) budget -= pic.bytes
+          body = !pic || budget < 0
+            ? <Markdown key={`m${i}`} text={'```latex\n' + p.tex + '\n```'} />
+            : (
+              <Box paddingLeft={2}>
+                <Image key={`t${i}`} source={{ png: pic.png }} columns={pic.columns} rows={pic.rows} alt={p.tex.replace(/\s+/g, ' ')} />
+              </Box>
+            )
+        }
         return (
-          <Box key={`b${i}`} paddingLeft={2} marginY={1}>
-            <Image
-              key={`t${i}`}
-              source={{ png: pic.png }}
-              columns={pic.columns}
-              rows={pic.rows}
-              alt={p.tex.replace(/\s+/g, ' ')}
-            />
+          <Box key={`b${i}`} flexDirection="row" justifyContent="space-between" alignItems="center" marginY={1}>
+            {body}
+            {at ? <Text dimColor>{`(${at[0]}.${at[2] ? 'b' : ''}${at[1] + ++y})`}</Text> : null}
           </Box>
         )
       })}
@@ -162,6 +218,7 @@ export const register: Register = (on, options) => {
   const scale = Number(options.scale) || 1
   // read once on first draw, again after a theme change
   let look: Promise<Look> | undefined
+  let numbers: Promise<Held> | undefined // read on first use, again after a /clear
 
   const aspectNow = Number(options.cellAspect) || 2.15
   const round = (n: number) => Math.round(n * 100) / 100
@@ -223,16 +280,49 @@ export const register: Register = (on, options) => {
   // compaction or /clear replaces that. (A reload resends it once: harmless.)
   let isTold = false
   on('session.compact', async ($, e, next) => { const r = await next(e); isTold = false; return r })
-  on('session.end', ($, e, next) => { if (e.reason === 'clear') isTold = false; return next(e) })
+  on('session.end', ($, e, next) => { if (e.reason === 'clear') { isTold = false; numbers = undefined }; return next(e) })
   on('prompt.submit', async ($, e, next) => {
-    if (isTold || !(await $.session.surfaces()).includes('terminal')) return next(e)
-    const r = await next({ ...e, context: [...(e.context ?? []), MATH_PROMPT] })
-    if (!r.drop) isTold = true // a dropped prompt never entered, so neither did the context
+    const { key, n } = await (numbers ??= numbersOf($))
+    if (!(await $.session.surfaces()).includes('terminal')) return next(e)
+    const [x, y] = PERSON.includes(e.origin.kind) ? [n.x + 1, 0] : [n.x, n.y]
+    const context = [...(e.context ?? []), `Display equations you write from here on are drawn numbered (${x}.${y + 1}), (${x}.${y + 2}), … in order.`]
+    const cited = cite(e.text, n)
+    if (cited) context.push(cited)
+    if (!isTold) context.push(MATH_PROMPT)
+    const r = await next({ ...e, context })
+    if (r.drop) return r // a dropped prompt never entered, so neither did the context
+    isTold = true
+    if (x !== n.x) {
+      Object.assign(n, { x, y: 0, b: 0 })
+      await $.store.set(key, n)
+    }
     return r
   })
 
+  // A reply block takes the next Ys; a command's output (the /btw answer below;
+  // not its echo, whose arguments may quote math) the next bNs. Subagents' rows
+  // are never drawn in the transcript, so never counted.
+  on('session.append', async ($, e, next) => {
+    const text = e.message.content.map(b => (b.type === 'text' ? b.text : '')).join('\n')
+    const isSide = e.door === 'command' && text.startsWith('<local-command-stdout>')
+    if (e.agentId !== undefined || !(e.door === 'response' || isSide)) return next(e)
+    const found = split(text).flatMap(p => ('tex' in p ? [p.tex] : []))
+    if (!found.length) return next(e)
+    const { key, n } = await (numbers ??= numbersOf($))
+    n.tex ??= {}
+    if (isSide) {
+      n.at[e.uuid] = [n.x, (n.b ??= 0), 1]
+      for (const tex of found) n.tex[`${n.x}.b${++n.b}`] = tex
+    } else {
+      n.at[e.uuid] = [n.x, n.y]
+      for (const tex of found) n.tex[`${n.x}.${++n.y}`] = tex
+    }
+    await $.store.set(key, n)
+    return next(e)
+  })
+
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    const tree = e.surface === 'terminal' && column($, e, e.props.text, await (look ??= detect($)), cellH, scale)
+    const tree = e.surface === 'terminal' && column($, e, e.props.text, await (look ??= detect($)), cellH, scale, await (numbers ??= numbersOf($)))
     if (!tree) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     // the engine's own reply rows carry a blank line above and a "● " gutter
@@ -252,13 +342,14 @@ export const register: Register = (on, options) => {
   // browser) and a session with nothing to fork yet are left to the engine.
   on('command.run', { command: 'btw' }, async ($, e, next) => {
     if (!e.args.trim()) return next(e)
-    const r = await $.model.fork({ prompt: `${BTW_NOTE}\n\n${e.args}` })
+    const cited = cite(e.args, (await (numbers ??= numbersOf($))).n)
+    const r = await $.model.fork({ prompt: `${BTW_NOTE}\n\n${cited && cited + '\n\n'}${e.args}` })
     if (!r.isAnswered && r.reason === 'nothing-to-fork') return next(e)
     return { text: r.isAnswered ? r.text : `_(no answer: ${r.reason})_` }
   })
 
   on('ui.render', { component: 'CommandOutput', props: { command: 'btw' } }, async ($, e, next) => {
-    const tree = e.surface === 'terminal' && !e.props.isErrored && column($, e, e.props.text, await (look ??= detect($)), cellH, scale)
+    const tree = e.surface === 'terminal' && !e.props.isErrored && column($, e, e.props.text, await (look ??= detect($)), cellH, scale, await (numbers ??= numbersOf($)))
     if (!tree) return next(e)
     const { Box, Text } = $.ui.resolve(e)
     return (

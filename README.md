@@ -7,6 +7,8 @@ A [Claude Code](https://claude.com/claude-code) mod that renders LaTeX display m
 - **Nothing to install.** MathJax 3 is bundled, and the SVG it produces is turned into pixels by a small pure-TypeScript rasterizer and PNG encoder. There's no TeX install, no WebAssembly and no network access.
 - **No more eaten backslashes.** The math is cut out of the reply's raw text before Claude Code's Markdown renderer sees it, so `\,`, `\{`, `\\` and friends reach TeX intact.
 - **Covers what you use:** `$$…$$`, `\[…\]`, bare `equation`, `align`, `gather` and `multline` environments (starred too), AMS packages, `mhchem`, matrices, stretchy braces and arrows, `\boxed`, `\cancel` and `\enclose`.
+- **Numbers every equation.** Each display block gets a label `(X.Y)` at the right edge: X is the index of your prompt, Y counts the display blocks Claude wrote since that prompt, across tool calls. So `(3.2)` is the second equation after your third prompt. A `/btw` answer's equations are numbered apart, `(3.b1)`, so they don't shift the reply's. The numbers are kept per session, so a resumed session shows the same ones.
+- **Cite them, both ways.** Write "why the sign in (3.2)?" and the mod attaches that equation's LaTeX source to your prompt as a hidden note, so Claude sees exactly the one you mean (`(3.2)`, `eq. 3.2` and `equation 3.2` are recognised). Claude is told the scheme and, with each prompt, the next number, so it can cite `(3.2)` back to you.
 - **Works in `/btw`.** A side question's answer is drawn by Claude Code's own panel, which no mod can reach, so the mod answers `/btw question` itself: the same tool-less fork of the conversation, printed as the command's output in the transcript with its math drawn. Bare `/btw` still opens the built-in panel. The panel's history browsing, copy and fork keys are not on the row.
 - **Tells Claude about it.** Once per context window, Claude gets a short note that display math is drawn here and that inline math isn't, so it writes formulas as display blocks instead of in code fences.
 
@@ -68,10 +70,12 @@ Everything the mod hooks, and why (`claude plugin validate .claude-plugin/plugin
 | Hook or call | Purpose |
 | --- | --- |
 | `ui.render` (`AssistantMessage`) | Draw replies containing display math as Markdown plus images |
-| `prompt.submit` | Attach the math note to the first prompt of each context window |
+| `prompt.submit` | Count your prompts (X); attach the next equation number and the source of any equation you cite to each prompt, and the math note to the first prompt of each context window |
 | `command.run` (`btw`), `$.model.fork` | Answer `/btw question` with a fork of the transcript, printed as the command's output |
 | `ui.render` (`CommandOutput`) | Draw that output row's display math as images |
 | `session.compact`, `session.end` | Notice a compaction or `/clear`, so the note is sent again |
+| `session.append` | Count the display blocks of each stored reply row and keep their source, for the equation numbers and citations; no row is changed |
+| `$.store.get`, `$.store.set`, `$.store.keys`, `$.store.delete`, `$.session.id` | Keep each session's equation numbers (row id → number) and sources across reloads and resumes, for the newest 50 sessions |
 | `config.set` (`theme`), `$.config.list` | Pick the ink colour from the theme |
 | `session.start`, `command.run`, `ui.render` (`Pane`), `$.command.register`, `$.ui.open`, `$.ui.close`, `$.ui.toast` | The `/tex-calibrate` command and its pane |
 | `$.state.get`, `$.state.set` | The calibration pane's trial value (`tex-display.aspect`) |
@@ -80,13 +84,15 @@ Everything the mod hooks, and why (`claude plugin validate .claude-plugin/plugin
 | `$.session.surfaces` | Only send the note when a terminal is drawing the session |
 | `$.ui.resolve` | Get the terminal's element constructors (`Box`, `Markdown`, `Image`) |
 
-The math note is about 110 tokens. It's attached to a prompt rather than the system prompt because Claude Code's built-in security plugin bypasses `prompt.compose` and `prompt.context` for user-installed mods.
+The math note is about 200 tokens, and the line giving the next number, sent with every prompt, about 25. It's attached to a prompt rather than the system prompt because Claude Code's built-in security plugin bypasses `prompt.compose` and `prompt.context` for user-installed mods.
 
 ## Limits
 
 - **No inline math.** An image takes up whole cells and can't sit inside a line of text, so `$…$` stays as text. The note asks Claude not to write it.
 - **One colour.** `\color` is ignored and everything is drawn in the theme's ink.
 - **Size per message.** Claude Code accepts at most 2 MiB of image data per drawn message. A large equation is about 20 KB as PNG, so this rarely matters. Equations past the limit show as `latex` code blocks.
+- **Numbers start when the mod does.** Rows stored before the mod counted them (a session begun without it, or with a version before 0.2) are drawn unnumbered, and X counts only the prompts the mod saw. One number per display block: the lines of an `align` aren't numbered separately.
+- **Claude's numbers are a count, not a lookup.** Claude can't see the labels; it counts its own display blocks from the number each prompt gives it. A block it writes inside a code fence isn't drawn and so isn't counted, and after a compaction it no longer sees the earlier equations it would cite. Your citations don't depend on this: their source is looked up.
 - **Errors.** A TeX error shows the source as a `latex` code block.
 - **While streaming,** an unfinished `$$` block shows as text until its closing delimiter arrives.
 
@@ -104,10 +110,10 @@ Four LaTeX mods were listed on [mods.aidojo.si](https://mods.aidojo.si) in Octob
 | Bare `align` etc. | yes | no | no | no | yes |
 | Math replaces the source | yes | no: pictures go under the reply | yes | yes | yes |
 | Tells Claude | first prompt per context window | an optional skill | `prompt.compose` | `prompt.compose` | `prompt.compose` |
-| Runs processes / writes files | no / no | yes / yes | yes / yes | yes / yes | yes / yes |
+| Runs processes / writes files | no / its equation numbers and sources, in its plugin store | yes / yes | yes / yes | yes / yes | yes / yes |
 | Extras | — | Mermaid, Graphviz, D2, tool-result images, a gallery pane | tmux passthrough | font metrics read from your terminal config | TikZ, LaTeX blocks, 10 fonts, macros |
 
-**Pick this one** if you want display math in the terminal with no dependencies and the smallest footprint: it runs no processes, writes no files, reads no transcript and keeps no state. It's also the only one that renders bare `align`/`gather` environments in the terminal, and that keeps each reply within Claude Code's 2 MiB image limit.
+**Pick this one** if you want display math in the terminal with no dependencies and the smallest footprint: it runs no processes and keeps nothing but the equation numbers and their sources. It's also the only one that renders bare `align`/`gather` environments in the terminal, and that keeps each reply within Claude Code's 2 MiB image limit.
 
 **Pick another** if you need what this one deliberately leaves out:
 - inline math: latex-inline;
